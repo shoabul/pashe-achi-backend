@@ -67,8 +67,19 @@ app.post('/api/events', verifyAuth, async (req, res) => {
 
 
 app.get('/api/events', async (req, res) => {
-  const result = await eventsCollection.find().toArray();
-  res.send(result);
+  try {
+    const { createdBy } = req.query;
+    let query = {};
+    
+    if (createdBy) {
+      query.createdBy = createdBy;
+    }
+
+    const result = await eventsCollection.find(query).toArray();
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({ error: 'Failed to fetch events.' });
+  }
 });
 
 
@@ -76,6 +87,43 @@ app.get('/api/events/:id', async (req, res) => {
   const { id } = req.params;
   const result = await eventsCollection.findOne({ _id: new ObjectId(id) });
   res.send(result);
+});
+
+
+app.put('/api/events/:id', verifyAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, description, eventDate, location, eventType, thumbnailUrl } = req.body;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({ error: 'Invalid event ID.' });
+    }
+
+    const updatedData = {
+      ...(title && { title }),
+      ...(description !== undefined && { description }),
+      ...(eventDate && { date: new Date(eventDate) }),
+      ...(location !== undefined && { location }),
+      ...(eventType && { category: eventType }),
+      ...(thumbnailUrl !== undefined && { thumbnailUrl }),
+      updatedAt: new Date(),
+    };
+
+    const filter = { _id: new ObjectId(id) };
+    const updateDoc = {
+      $set: updatedData,
+    };
+
+    const result = await eventsCollection.updateOne(filter, updateDoc);
+
+    if (result.matchedCount === 0) {
+      return res.status(404).send({ error: 'Event not found.' });
+    }
+
+    res.send({ message: 'Event updated successfully', result });
+  } catch (error) {
+    res.status(500).send({ error: 'Failed to update event.' });
+  }
 });
 
 
