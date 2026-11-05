@@ -109,6 +109,8 @@ app.put('/api/events/:id', verifyAuth, async (req, res) => {
       updatedAt: new Date(),
     };
 
+
+
     const filter = { _id: new ObjectId(id) };
     const updateDoc = {
       $set: updatedData,
@@ -123,6 +125,35 @@ app.put('/api/events/:id', verifyAuth, async (req, res) => {
     res.send({ message: 'Event updated successfully', result });
   } catch (error) {
     res.status(500).send({ error: 'Failed to update event.' });
+  }
+});
+
+    app.delete('/api/events/:id', verifyAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({ error: 'Invalid event ID.' });
+    }
+
+    const filter = { _id: new ObjectId(id) };
+
+    // Optional: Jodi shudhu creator-i tar nijer event delete korte pare eta ensure korte chao:
+    const event = await eventsCollection.findOne(filter);
+    if (!event) return res.status(404).send({ error: 'Event not found.' });
+    if (event.createdBy !== req.userId) {
+      return res.status(403).send({ error: 'Unauthorized to delete this event.' });
+    }
+
+    const result = await eventsCollection.deleteOne(filter);
+
+    if (result.deletedCount === 0) {
+      return res.status(404).send({ error: 'Event not found.' });
+    }
+
+    res.send({ message: 'Event deleted successfully', result });
+  } catch (error) {
+    res.status(500).send({ error: 'Failed to delete event.' });
   }
 });
 
