@@ -4,26 +4,28 @@ import cors from 'cors';
 import 'dotenv/config';
 
 const app = express();
-const PORT = process.env.PORT || 8000;
 
-app.use(cors());
+
+app.use(cors({
+  origin: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'x-user-id'],
+  credentials: true
+}));
+
 app.use(express.json());
 
 const client = new MongoClient(process.env.MONGODB_URI);
+let db;
 
-export async function connectToMongoDB() {
-  try {
+// 2. Connect DB inside request or reusable helper
+async function getDb() {
+  if (!db) {
     await client.connect();
-    console.log('Connected to MongoDB!');
-    return client;
-  } catch (err) {
-    console.dir(err);
+    db = client.db(process.env.MONGODB_DB || 'pashe_achi_db');
   }
+  return db;
 }
-
-const mongoClient = await connectToMongoDB();
-const db = mongoClient.db(process.env.MONGODB_DB || 'pashe_achi_db');
-const eventsCollection = db.collection('events');
 
 const verifyAuth = (req, res, next) => {
   const userId = req.headers['x-user-id'];
@@ -42,41 +44,46 @@ app.get('/', (req, res) => {
 
 // Create Event
 app.post('/api/events', verifyAuth, async (req, res) => {
-  const { title, description, eventDate, location, eventType, thumbnailUrl } = req.body;
+  try {
+    const database = await getDb();
+    const eventsCollection = database.collection('events');
 
-  if (!title || !eventDate) {
-    return res.status(400).send({ error: 'Title and date are required.' });
+    const { title, description, eventDate, location, eventType, thumbnailUrl } = req.body;
+
+    if (!title || !eventDate) {
+      return res.status(400).send({ error: 'Title and date are required.' });
+    }
+
+    const newEvent = {
+      title,
+      description: description || '',
+      date: new Date(eventDate),
+      location: location || '',
+      category: eventType || 'General',
+      thumbnailUrl: thumbnailUrl || '',
+      createdBy: req.userId,
+      participants: [],
+      createdAt: new Date(),
+    };
+
+    const result = await eventsCollection.insertOne(newEvent);
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({ error: error.message || 'Failed to create event.' });
   }
-
-  const newEvent = {
-    title,
-    description: description || '',
-    date: new Date(eventDate),
-    location: location || '',
-    category: eventType || 'General',
-    thumbnailUrl: thumbnailUrl || '',
-    createdBy: req.userId,
-    participants: [], // Tracks user IDs who joined this event
-    createdAt: new Date(),
-  };
-
-  const result = await eventsCollection.insertOne(newEvent);
-  res.send(result);
 });
 
-// Get Events (Supports filtering by createdBy or participant)
+// Get Events
 app.get('/api/events', async (req, res) => {
   try {
+    const database = await getDb();
+    const eventsCollection = database.collection('events');
+
     const { createdBy, participant } = req.query;
     let query = {};
     
-    if (createdBy) {
-      query.createdBy = createdBy;
-    }
-
-    if (participant) {
-      query.participants = participant;
-    }
+    if (createdBy) query.createdBy = createdBy;
+    if (participant) query.participants = participant;
 
     const result = await eventsCollection.find(query).toArray();
     res.send(result);
@@ -85,9 +92,12 @@ app.get('/api/events', async (req, res) => {
   }
 });
 
-// Get Single Event by ID
+// Get Single Event
 app.get('/api/events/:id', async (req, res) => {
   try {
+    const database = await getDb();
+    const eventsCollection = database.collection('events');
+
     const { id } = req.params;
     if (!ObjectId.isValid(id)) {
       return res.status(400).send({ error: 'Invalid event ID.' });
@@ -102,9 +112,12 @@ app.get('/api/events/:id', async (req, res) => {
   }
 });
 
-// Join / Leave Event Endpoint
+// Join / Leave Event
 app.post('/api/events/:id/join', verifyAuth, async (req, res) => {
   try {
+    const database = await getDb();
+    const eventsCollection = database.collection('events');
+
     const { id } = req.params;
     const userId = req.userId;
 
@@ -117,7 +130,6 @@ app.post('/api/events/:id/join', verifyAuth, async (req, res) => {
       return res.status(404).send({ error: 'Event not found.' });
     }
 
-    // Creator cannot join their own event
     if (event.createdBy === userId) {
       return res.status(400).send({ error: 'Creator cannot join their own event.' });
     }
@@ -125,17 +137,14 @@ app.post('/api/events/:id/join', verifyAuth, async (req, res) => {
     const participants = event.participants || [];
     const alreadyJoined = participants.includes(userId);
 
-    let result;
     if (alreadyJoined) {
-      // Leave event if already joined
-      result = await eventsCollection.updateOne(
+      await eventsCollection.updateOne(
         { _id: new ObjectId(id) },
         { $pull: { participants: userId } }
       );
       return res.send({ message: 'Successfully left the event.', joined: false });
     } else {
-      // Join event if not joined yet
-      result = await eventsCollection.updateOne(
+      await eventsCollection.updateOne(
         { _id: new ObjectId(id) },
         { $addToSet: { participants: userId } }
       );
@@ -149,6 +158,9 @@ app.post('/api/events/:id/join', verifyAuth, async (req, res) => {
 // Update Event
 app.put('/api/events/:id', verifyAuth, async (req, res) => {
   try {
+    const database = await getDb();
+    const eventsCollection = database.collection('events');
+
     const { id } = req.params;
     const { title, description, eventDate, location, eventType, thumbnailUrl } = req.body;
 
@@ -174,12 +186,10 @@ app.put('/api/events/:id', verifyAuth, async (req, res) => {
       updatedAt: new Date(),
     };
 
-    const filter = { _id: new ObjectId(id) };
-    const updateDoc = {
-      $set: updatedData,
-    };
-
-    const result = await eventsCollection.updateOne(filter, updateDoc);
+    const result = await eventsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updatedData }
+    );
 
     res.send({ message: 'Event updated successfully', result });
   } catch (error) {
@@ -190,21 +200,22 @@ app.put('/api/events/:id', verifyAuth, async (req, res) => {
 // Delete Event
 app.delete('/api/events/:id', verifyAuth, async (req, res) => {
   try {
+    const database = await getDb();
+    const eventsCollection = database.collection('events');
+
     const { id } = req.params;
 
     if (!ObjectId.isValid(id)) {
       return res.status(400).send({ error: 'Invalid event ID.' });
     }
 
-    const filter = { _id: new ObjectId(id) };
-
-    const event = await eventsCollection.findOne(filter);
+    const event = await eventsCollection.findOne({ _id: new ObjectId(id) });
     if (!event) return res.status(404).send({ error: 'Event not found.' });
     if (event.createdBy !== req.userId) {
       return res.status(403).send({ error: 'Unauthorized to delete this event.' });
     }
 
-    const result = await eventsCollection.deleteOne(filter);
+    const result = await eventsCollection.deleteOne({ _id: new ObjectId(id) });
 
     res.send({ message: 'Event deleted successfully', result });
   } catch (error) {
@@ -212,8 +223,12 @@ app.delete('/api/events/:id', verifyAuth, async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Server is running at ${PORT}`);
-});
+// Local Development
+if (process.env.NODE_ENV !== 'production') {
+  const PORT = process.env.PORT || 8000;
+  app.listen(PORT, () => {
+    console.log(`Server is running at ${PORT}`);
+  });
+}
 
 export default app;
